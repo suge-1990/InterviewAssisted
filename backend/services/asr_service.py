@@ -1,8 +1,10 @@
 import asyncio
-import io
 import logging
+import os
+import subprocess
 import tempfile
 import time
+import wave
 from dataclasses import dataclass
 
 import numpy as np
@@ -20,19 +22,13 @@ class TranscriptResult:
 
 
 def _decode_webm_to_pcm(webm_bytes: bytes) -> np.ndarray | None:
-    """Decode WebM/Opus audio bytes to 16kHz mono float32 numpy array using ffmpeg directly."""
-    import subprocess
-    import tempfile
-    import os
-
+    """Decode WebM/Opus audio bytes to 16kHz mono float32 numpy array using ffmpeg."""
     tmp_in = None
     try:
-        # Write WebM to temp file
         with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
             f.write(webm_bytes)
             tmp_in = f.name
 
-        # Use ffmpeg to convert to raw PCM
         result = subprocess.run(
             [
                 "ffmpeg", "-y", "-i", tmp_in,
@@ -45,10 +41,12 @@ def _decode_webm_to_pcm(webm_bytes: bytes) -> np.ndarray | None:
         )
 
         if result.returncode != 0:
-            logger.error("ffmpeg error: %s", result.stderr.decode())
+            stderr = result.stderr.decode().strip()
+            if stderr:
+                logger.error("ffmpeg error: %s", stderr)
             return None
 
-        if len(result.stdout) < 320:  # Less than 10ms of audio
+        if len(result.stdout) < 320:
             return None
 
         samples = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
@@ -70,7 +68,10 @@ class ASRService:
     def __init__(self, provider: str = "funasr", model: str = "iic/SenseVoiceSmall", device: str = "cpu"):
         self.provider = provider
         self.device = device
-        self._buffer: bytes = b""
+        # All chunks since recording started — WebM needs continuous buffer
+        self._full_buffer: bytes = b""
+        # Position of last transcribed audio
+        self._last_transcribed_len: int = 0
         self._chunk_count: int = 0
         self._start_time: float = time.time()
         self._whisper_model = None
@@ -79,7 +80,6 @@ class ASRService:
         self._try_init_model()
 
     def _try_init_model(self):
-        # Try faster-whisper first (always available after install)
         try:
             from faster_whisper import WhisperModel
             compute_type = "int8"
@@ -102,7 +102,6 @@ class ASRService:
         except Exception as e:
             logger.warning("Failed to load faster-whisper: %s", e)
 
-        # Try FunASR as fallback
         if self.provider == "funasr":
             try:
                 from funasr import AutoModel
@@ -120,24 +119,21 @@ class ASRService:
             except Exception as e:
                 logger.warning("Failed to load FunASR: %s", e)
 
-        logger.warning("No ASR model available. Speech recognition disabled. Use manual input.")
+        logger.warning("No ASR model available. Use manual input.")
 
     async def process_chunk(self, audio_bytes: bytes) -> list[TranscriptResult]:
-        """Process an audio chunk. Accumulates multiple chunks before transcribing."""
-        self._buffer += audio_bytes
+        """Process an audio chunk. Accumulates all chunks and transcribes periodically."""
+        self._full_buffer += audio_bytes
         self._chunk_count += 1
 
-        # Accumulate ~4 chunks (~2 seconds at 500ms per chunk)
-        if self._chunk_count < 4:
+        # Every 6 chunks (~3 seconds at 500ms per chunk), run transcription
+        if self._chunk_count % 6 != 0:
             return []
 
-        results = await self._transcribe()
-        self._buffer = b""
-        self._chunk_count = 0
-        return results
+        return await self._transcribe()
 
     async def _transcribe(self) -> list[TranscriptResult]:
-        if not self._initialized or not self._buffer:
+        if not self._initialized or not self._full_buffer:
             return []
 
         if self._whisper_model is not None:
@@ -147,31 +143,50 @@ class ASRService:
 
     async def _transcribe_whisper(self) -> list[TranscriptResult]:
         try:
-            # Decode WebM to PCM
-            audio_data = await asyncio.to_thread(_decode_webm_to_pcm, self._buffer)
-            if audio_data is None or len(audio_data) < 1600:  # Less than 0.1s
+            # Decode the FULL buffer (WebM needs header from the beginning)
+            audio_data = await asyncio.to_thread(_decode_webm_to_pcm, self._full_buffer)
+            if audio_data is None or len(audio_data) < 1600:
+                logger.warning("Failed to decode audio or too short (%d bytes buffer)",
+                             len(self._full_buffer))
                 return []
 
-            # Write to temp wav file for whisper
-            import wave
+            # Only transcribe audio we haven't processed yet
+            # Convert last_transcribed_len from PCM sample count
+            new_start = self._last_transcribed_len
+            if new_start >= len(audio_data):
+                return []
+
+            new_audio = audio_data[new_start:]
+            if len(new_audio) < 8000:  # Less than 0.5s of new audio
+                return []
+
+            logger.info("Transcribing %d new samples (%.1fs), total buffer %.1fs",
+                       len(new_audio), len(new_audio) / 16000,
+                       len(audio_data) / 16000)
+
+            # Write new audio segment to temp wav
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 tmp_path = tmp.name
                 with wave.open(tmp, "wb") as wf:
                     wf.setnchannels(1)
                     wf.setsampwidth(2)
                     wf.setframerate(16000)
-                    wf.writeframes((audio_data * 32768).astype(np.int16).tobytes())
+                    wf.writeframes((new_audio * 32768).astype(np.int16).tobytes())
 
-            # Run whisper transcription in thread
-            segments, info = await asyncio.to_thread(
+            # Run whisper transcription
+            segments, _info = await asyncio.to_thread(
                 self._whisper_model.transcribe,
                 tmp_path,
                 language="zh",
                 beam_size=3,
                 vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=300,
+                    speech_pad_ms=200,
+                    threshold=0.3,
+                ),
             )
 
-            # Collect results
             transcripts = []
             for segment in segments:
                 text = segment.text.strip()
@@ -184,13 +199,22 @@ class ASRService:
                         end_time=time.time(),
                     ))
 
+            # Update position
+            self._last_transcribed_len = len(audio_data)
             self._start_time = time.time()
 
-            # Clean up temp file
-            import os
             try:
                 os.unlink(tmp_path)
             except OSError:
+                pass
+
+            if transcripts:
+                logger.info("Transcribed: %s", [t.text for t in transcripts])
+
+            # Prevent buffer from growing too large (keep last 30s max)
+            max_samples = 16000 * 30
+            if len(audio_data) > max_samples:
+                # Can't trim WebM buffer, but we track position via _last_transcribed_len
                 pass
 
             return transcripts
@@ -199,6 +223,7 @@ class ASRService:
             return []
 
     def reset(self):
-        self._buffer = b""
+        self._full_buffer = b""
+        self._last_transcribed_len = 0
         self._chunk_count = 0
         self._start_time = time.time()

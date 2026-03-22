@@ -1,0 +1,61 @@
+请将以下简历原文解析为结构化的JSON格式。要求：
+
+1. 严格按照以下JSON Schema输出，不要添加额外字段：
+
+```json
+{
+  "name": "姓名",
+  "phone": "手机号码",
+  "email": "邮箱地址",
+  "target_position": "求职意向/目标岗位",
+  "summary": "个人简介/自我评价",
+  "skills": ["技能1", "技能2", "技能3"],
+  "work_experiences": [
+    {
+      "company": "公司名称",
+      "title": "职位名称",
+      "start_date": "入职时间",
+      "end_date": "离职时间（在职则填'至今'）",
+      "description": "工作职责描述",
+      "key_achievements": ["量化成果1（务必包含具体数据，如提升XX%、节省XX万、服务XX用户等）", "量化成果2"],
+      "tech_stack": ["使用的技术/工具1", "使用的技术/工具2"],
+      "industry": "所属行业"
+    }
+  ],
+  "projects": [
+    {
+      "name": "项目名称",
+      "role": "担任角色",
+      "description": "项目描述",
+      "tech_stack": ["技术栈1", "技术栈2"],
+      "highlights": ["项目亮点1", "项目亮点2"],
+      "duration": "项目周期",
+      "team_size": 5
+    }
+  ],
+  "education": [
+    {
+      "school": "学校名称",
+      "degree": "学历（如本科、硕士、博士）",
+      "major": "专业",
+      "graduation_year": "毕业年份",
+      "gpa": "GPA（如有）",
+      "highlights": ["荣誉/奖项"]
+    }
+  ],
+  "languages": ["语言能力1", "语言能力2"],
+  "certifications": ["证书1", "证书2"]
+}
+```
+
+2. 解析要求：
+   - key_achievements 必须尽量提取量化数据，如百分比、金额、用户量、时间等
+   - 如果简历中没有明确提到某个字段，对应填空字符串或空数组
+   - phone、email、target_position、gpa 如果不存在则填 null
+   - team_size 如果不存在则填 null
+   - 时间格式统一为 "YYYY.MM" 或 "YYYY"
+   - 只输出JSON，不要输出任何解释性文字
+
+以下是简历原文：
+
+{resume_text}

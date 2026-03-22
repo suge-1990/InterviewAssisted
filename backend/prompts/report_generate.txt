@@ -1,0 +1,53 @@
+请分析以下面试记录，并生成一份结构化的面试报告。
+
+## 面试基本信息
+- 公司：{company}
+- 职位：{position}
+- 时长：{duration} 分钟
+- 问题总数：{total_questions}
+
+## 面试对话记录
+{transcript}
+
+## 输出要求
+请严格按照以下 JSON 格式输出分析报告，不要包含任何其他文字：
+
+{{
+  "summary": "面试整体概述，包括面试表现、氛围、整体评价（100-200字）",
+  "duration": {duration},
+  "total_questions": {total_questions},
+  "question_categories": {{
+    "技术基础": 0,
+    "项目经验": 0,
+    "系统设计": 0,
+    "行为面试": 0,
+    "其他": 0
+  }},
+  "strengths": [
+    "候选人表现好的方面1",
+    "候选人表现好的方面2"
+  ],
+  "improvements": [
+    "可以改进的方面1",
+    "可以改进的方面2"
+  ],
+  "question_analysis": [
+    {{
+      "question": "面试问题原文",
+      "category": "问题分类",
+      "answer_quality": "good/average/poor",
+      "comment": "对该问题回答的简要点评"
+    }}
+  ],
+  "recommended_practice": [
+    "建议练习的方向1",
+    "建议练习的方向2"
+  ]
+}}
+
+## 分析要点
+1. question_categories 中只保留实际出现的分类，数值为对应分类的问题数量
+2. strengths 和 improvements 各列出 2-5 条
+3. question_analysis 对每个面试问题逐一分析
+4. recommended_practice 给出 3-5 条具体的练习建议
+5. 所有内容使用中文
