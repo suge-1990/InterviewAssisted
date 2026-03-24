@@ -21,10 +21,13 @@
 | 面试复盘报告 | 面试结束后 LLM 自动生成表现分析报告 | ✅ |
 | 笔试辅助 | 粘贴题目文本/截图，AI 解题（支持编程题） | ✅ |
 | 移动端副屏 | 手机扫码查看答案（WebSocket 实时同步） | ✅ |
+<<<<<<< HEAD
 | 极速/精确双模式 | 同时生成极速回答和精确回答（知识库+题库检索增强），用户取优 | ✅ |
 | 双端互联 | PC 端生成 QR 码/连接码，手机扫码连接同一 Session，实时同步答案 | ✅ |
 | 语音触发词 | 候选人说"让我想想"等触发词时自动触发快答 | ✅ |
 | Mac + iPhone 响应式 | iPhone 底部 Tab 导航 + 浮动控制面板 + Tab 切换转写/答案 | ✅ |
+=======
+>>>>>>> 3d6fdc9bed8fb7f0fc44d42958a47e79f5b21c33
 
 ### 支持的面试场景
 
@@ -68,7 +71,10 @@ InterviewAssisted/
 │   ├── routers/                # API 路由
 │   │   ├── ws_audio.py         # WebSocket 实时音频流（核心）
 │   │   ├── ws_viewer.py        # 移动端只读 WebSocket
+<<<<<<< HEAD
 │   │   ├── session.py          # Session 管理（创建/连接信息/QR码）
+=======
+>>>>>>> 3d6fdc9bed8fb7f0fc44d42958a47e79f5b21c33
 │   │   ├── chat.py             # 手动提问 SSE 接口
 │   │   ├── resume.py           # 简历上传与解析
 │   │   ├── knowledge.py        # 知识库 CRUD
@@ -78,8 +84,11 @@ InterviewAssisted/
 │   │   ├── asr_service.py      # 语音识别（双通道 + 滑动窗口）
 │   │   ├── llm_service.py      # LLM 调用（流式）
 │   │   ├── question_detector.py # 问题检测（规则引擎）
+<<<<<<< HEAD
     │   │   ├── dual_answer_engine.py # 极速/精确双模式答案引擎
     │   │   ├── voice_trigger.py   # 语音触发词服务
+=======
+>>>>>>> 3d6fdc9bed8fb7f0fc44d42958a47e79f5b21c33
 │   │   ├── resume_parser.py    # 简历结构化解析
 │   │   ├── knowledge_base.py   # 知识库匹配
 │   │   ├── question_bank.py    # 题库服务
@@ -97,8 +106,12 @@ InterviewAssisted/
 │   │   ├── (main)/practice/    # 题库练习
 │   │   ├── (main)/history/     # 面试记录 + 复盘报告
 │   │   ├── (main)/exam/        # 笔试辅助
+<<<<<<< HEAD
 │   │   ├── mobile/             # 移动端连接入口
     │   │   └── mobile/interview/  # 移动端面试答案展示（双模式）
+=======
+│   │   └── mobile/             # 移动端副屏
+>>>>>>> 3d6fdc9bed8fb7f0fc44d42958a47e79f5b21c33
 │   ├── src/components/         # UI 组件
 │   ├── src/hooks/              # 自定义 Hooks
 │   ├── src/stores/             # Zustand 状态管理
@@ -221,19 +234,30 @@ PC 端面试时，手机打开 `/mobile?session=xxx` 页面，实时同步显示
 | `/api/questions/search` | GET | 题库搜索 |
 | `/api/interviews/` | CRUD | 面试记录 |
 | `/api/interviews/{id}/report` | GET | 复盘报告 |
+<<<<<<< HEAD
 | `/api/session/create` | POST | 创建面试 Session |
 | `/api/session/{id}/connect-info` | GET | 获取连接信息（IP/端口/QR码） |
 | `/api/session/{id}` | DELETE | 销毁 Session |
+=======
+>>>>>>> 3d6fdc9bed8fb7f0fc44d42958a47e79f5b21c33
 
 ## 前端页面
 
 | 路径 | 功能 |
 |------|------|
+<<<<<<< HEAD
 | `/` | 面试辅助主页（语音转写 + 双模式 AI 答案 + QR 码连接） |
+=======
+| `/` | 面试辅助主页（语音转写 + AI 答案） |
+>>>>>>> 3d6fdc9bed8fb7f0fc44d42958a47e79f5b21c33
 | `/knowledge` | 知识库管理（增删改查） |
 | `/practice` | 题库练习（筛选、搜索、参考答案） |
 | `/history` | 面试记录列表 |
 | `/history/[id]` | 复盘报告详情 |
 | `/exam` | 笔试辅助（粘贴题目、AI 解题） |
+<<<<<<< HEAD
 | `/mobile` | 移动端连接入口（输入连接码） |
 | `/mobile/interview` | 移动端面试副屏（双模式答案实时同步） |
+=======
+| `/mobile` | 移动端副屏（只读答案） |
+>>>>>>> 3d6fdc9bed8fb7f0fc44d42958a47e79f5b21c33
