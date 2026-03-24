@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS: int = 2048
     LLM_TEMPERATURE: float = 0.7
 
+    # Dual answer mode: "speed" | "precise" | "dual"
+    DUAL_ANSWER_MODE: str = "dual"
+
     # Upload
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_SIZE_MB: int = 10

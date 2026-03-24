@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -41,16 +42,12 @@ def _decode_webm_to_pcm(webm_bytes: bytes) -> np.ndarray | None:
         )
 
         if result.returncode != 0:
-            stderr = result.stderr.decode().strip()
-            if stderr:
-                logger.error("ffmpeg error: %s", stderr)
             return None
 
         if len(result.stdout) < 320:
             return None
 
-        samples = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
-        return samples
+        return np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
     except Exception as e:
         logger.error("Failed to decode WebM audio: %s", e)
         return None
@@ -62,20 +59,59 @@ def _decode_webm_to_pcm(webm_bytes: bytes) -> np.ndarray | None:
                 pass
 
 
+# Common Whisper hallucination patterns
+_HALLUCINATION_PATTERNS = [
+    re.compile(r'(发言人|说话人|讲者|Speaker)\s*[:：]?\s*', re.IGNORECASE),
+    re.compile(r'字幕[由by].*', re.IGNORECASE),
+    re.compile(r'谢谢观看.*', re.IGNORECASE),
+    re.compile(r'请订阅.*', re.IGNORECASE),
+    re.compile(r'感谢收看.*', re.IGNORECASE),
+    re.compile(r'欢迎订阅.*', re.IGNORECASE),
+    re.compile(r'请点赞.*', re.IGNORECASE),
+    re.compile(r'Subscribe.*', re.IGNORECASE),
+    re.compile(r'Thanks for watching.*', re.IGNORECASE),
+    re.compile(r'\[音乐\]|\[掌声\]|BGM.*|片尾曲.*'),
+]
+
+
+def _clean_hallucinations(text: str) -> str:
+    for p in _HALLUCINATION_PATTERNS:
+        text = p.sub('', text)
+    return text.strip()
+
+
+class _ChannelBuffer:
+    """Per-channel (mic or system) audio buffer and state."""
+
+    def __init__(self, speaker: str):
+        self.speaker = speaker
+        self.buffer: bytes = b""
+        self.chunk_count: int = 0
+        self.last_sent_text: str = ""
+        self.start_time: float = time.time()
+
+    def reset(self):
+        self.buffer = b""
+        self.chunk_count = 0
+        self.last_sent_text = ""
+        self.start_time = time.time()
+
+
 class ASRService:
-    """ASR service using faster-whisper for speech recognition."""
+    """ASR service using faster-whisper with dual-channel support."""
 
     def __init__(self, provider: str = "funasr", model: str = "iic/SenseVoiceSmall", device: str = "cpu"):
-        self.provider = provider
         self.device = device
-        # All chunks since recording started — WebM needs continuous buffer
-        self._full_buffer: bytes = b""
-        # Position of last transcribed audio
-        self._last_transcribed_len: int = 0
-        self._chunk_count: int = 0
-        self._start_time: float = time.time()
         self._whisper_model = None
         self._initialized = False
+
+        # Dual channel buffers
+        self._channels: dict[str, _ChannelBuffer] = {
+            "interviewer": _ChannelBuffer("interviewer"),
+            "candidate": _ChannelBuffer("candidate"),
+        }
+        # Legacy single-channel for backward compat
+        self._single_channel = _ChannelBuffer("unknown")
 
         self._try_init_model()
 
@@ -88,142 +124,140 @@ class ASRService:
                 device = "cuda"
                 compute_type = "float16"
 
-            logger.info("Loading faster-whisper model (base)...")
-            self._whisper_model = WhisperModel(
-                "base",
-                device=device,
-                compute_type=compute_type,
-            )
+            model_size = "small"
+            logger.info("Loading faster-whisper model (%s)...", model_size)
+            self._whisper_model = WhisperModel(model_size, device=device, compute_type=compute_type)
             self._initialized = True
-            logger.info("faster-whisper model loaded successfully")
-            return
+            logger.info("faster-whisper model (%s) loaded successfully", model_size)
         except ImportError:
             logger.warning("faster-whisper not installed")
         except Exception as e:
             logger.warning("Failed to load faster-whisper: %s", e)
 
-        if self.provider == "funasr":
-            try:
-                from funasr import AutoModel
-                self._asr_model = AutoModel(
-                    model="iic/SenseVoiceSmall",
-                    vad_model="fsmn-vad",
-                    punc_model="ct-punc",
-                    device=self.device,
-                )
-                self._initialized = True
-                logger.info("FunASR model loaded successfully")
-                return
-            except ImportError:
-                pass
-            except Exception as e:
-                logger.warning("Failed to load FunASR: %s", e)
+    @property
+    def _chunk_count(self) -> int:
+        """Backward compat for logging."""
+        return self._single_channel.chunk_count
 
-        logger.warning("No ASR model available. Use manual input.")
+    async def process_chunk(self, audio_bytes: bytes, speaker: str = "unknown") -> list[TranscriptResult]:
+        """Process an audio chunk. speaker: 'interviewer', 'candidate', or 'unknown'."""
+        if speaker in self._channels:
+            ch = self._channels[speaker]
+        else:
+            ch = self._single_channel
+            ch.speaker = speaker
 
-    async def process_chunk(self, audio_bytes: bytes) -> list[TranscriptResult]:
-        """Process an audio chunk. Accumulates all chunks and transcribes periodically."""
-        self._full_buffer += audio_bytes
-        self._chunk_count += 1
+        ch.buffer += audio_bytes
+        ch.chunk_count += 1
 
-        # Every 6 chunks (~3 seconds at 500ms per chunk), run transcription
-        if self._chunk_count % 6 != 0:
+        # Trigger every 4 chunks (~2s)
+        if ch.chunk_count % 4 != 0:
             return []
 
-        return await self._transcribe()
+        return await self._transcribe_channel(ch)
 
-    async def _transcribe(self) -> list[TranscriptResult]:
-        if not self._initialized or not self._full_buffer:
+    async def _transcribe_channel(self, ch: _ChannelBuffer) -> list[TranscriptResult]:
+        if not self._initialized or not ch.buffer or self._whisper_model is None:
             return []
 
-        if self._whisper_model is not None:
-            return await self._transcribe_whisper()
-
-        return []
-
-    async def _transcribe_whisper(self) -> list[TranscriptResult]:
         try:
-            # Decode the FULL buffer (WebM needs header from the beginning)
-            audio_data = await asyncio.to_thread(_decode_webm_to_pcm, self._full_buffer)
+            audio_data = await asyncio.to_thread(_decode_webm_to_pcm, ch.buffer)
             if audio_data is None or len(audio_data) < 1600:
-                logger.warning("Failed to decode audio or too short (%d bytes buffer)",
-                             len(self._full_buffer))
                 return []
 
-            # Only transcribe audio we haven't processed yet
-            # Convert last_transcribed_len from PCM sample count
-            new_start = self._last_transcribed_len
-            if new_start >= len(audio_data):
+            # Sliding window: last 8 seconds
+            window_samples = 16000 * 8
+            window_audio = audio_data[-window_samples:] if len(audio_data) > window_samples else audio_data
+
+            if len(window_audio) < 8000:
                 return []
 
-            new_audio = audio_data[new_start:]
-            if len(new_audio) < 8000:  # Less than 0.5s of new audio
-                return []
-
-            logger.info("Transcribing %d new samples (%.1fs), total buffer %.1fs",
-                       len(new_audio), len(new_audio) / 16000,
-                       len(audio_data) / 16000)
-
-            # Write new audio segment to temp wav
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 tmp_path = tmp.name
                 with wave.open(tmp, "wb") as wf:
                     wf.setnchannels(1)
                     wf.setsampwidth(2)
                     wf.setframerate(16000)
-                    wf.writeframes((new_audio * 32768).astype(np.int16).tobytes())
+                    wf.writeframes((window_audio * 32768).astype(np.int16).tobytes())
 
-            # Run whisper transcription
-            segments, _info = await asyncio.to_thread(
+            segments_iter, _info = await asyncio.to_thread(
                 self._whisper_model.transcribe,
                 tmp_path,
                 language="zh",
-                beam_size=3,
+                beam_size=5,
+                best_of=3,
                 vad_filter=True,
                 vad_parameters=dict(
-                    min_silence_duration_ms=300,
-                    speech_pad_ms=200,
-                    threshold=0.3,
+                    min_silence_duration_ms=500,
+                    speech_pad_ms=300,
+                    threshold=0.35,
                 ),
+                condition_on_previous_text=True,
+                no_speech_threshold=0.6,
+                initial_prompt="以下是一段面试对话的实时语音转写。",
+                without_timestamps=True,
             )
 
-            transcripts = []
-            for segment in segments:
-                text = segment.text.strip()
-                if text and len(text) > 1:
-                    transcripts.append(TranscriptResult(
-                        text=text,
-                        is_final=True,
-                        speaker="unknown",
-                        start_time=self._start_time,
-                        end_time=time.time(),
-                    ))
-
-            # Update position
-            self._last_transcribed_len = len(audio_data)
-            self._start_time = time.time()
+            segments = list(segments_iter)
+            full_text = "".join(seg.text.strip() for seg in segments).strip()
+            full_text = _clean_hallucinations(full_text)
 
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
 
-            if transcripts:
-                logger.info("Transcribed: %s", [t.text for t in transcripts])
+            if not full_text:
+                return []
 
-            # Prevent buffer from growing too large (keep last 30s max)
-            max_samples = 16000 * 30
-            if len(audio_data) > max_samples:
-                # Can't trim WebM buffer, but we track position via _last_transcribed_len
-                pass
+            # Deduplicate
+            new_text = self._extract_new_text(ch.last_sent_text, full_text)
+            if not new_text:
+                return []
 
-            return transcripts
+            new_text = _clean_hallucinations(new_text)
+            if not new_text or len(new_text) < 2:
+                return []
+
+            ch.last_sent_text = full_text
+
+            logger.info("[%s] Transcribed: '%s'", ch.speaker, new_text)
+
+            return [TranscriptResult(
+                text=new_text,
+                is_final=True,
+                speaker=ch.speaker,
+                start_time=ch.start_time,
+                end_time=time.time(),
+            )]
+
         except Exception as e:
-            logger.error("Whisper transcription error: %s", e)
+            logger.error("Whisper transcription error (%s): %s", ch.speaker, e)
             return []
 
+    @staticmethod
+    def _extract_new_text(prev: str, curr: str) -> str:
+        """Extract only the new portion of text compared to last sent."""
+        if not prev:
+            return curr
+
+        # Find longest suffix of prev that is prefix of curr
+        best_overlap = 0
+        for i in range(1, len(prev) + 1):
+            if curr.startswith(prev[-i:]):
+                best_overlap = i
+
+        if best_overlap > 0:
+            return curr[best_overlap:].strip()
+
+        # Check if prev is substring of curr
+        idx = curr.find(prev)
+        if idx >= 0:
+            return curr[idx + len(prev):].strip()
+
+        return curr
+
     def reset(self):
-        self._full_buffer = b""
-        self._last_transcribed_len = 0
-        self._chunk_count = 0
-        self._start_time = time.time()
+        for ch in self._channels.values():
+            ch.reset()
+        self._single_channel.reset()

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import init_db
-from routers import chat, interviews, knowledge, questions, resume, ws_audio, ws_viewer
+from routers import chat, interviews, knowledge, questions, resume, session, ws_audio, ws_viewer
 
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ app.include_router(resume.router, prefix="/api/resume", tags=["resume"])
 app.include_router(knowledge.router, prefix="/api/knowledge", tags=["knowledge"])
 app.include_router(questions.router, prefix="/api/questions", tags=["questions"])
 app.include_router(interviews.router, prefix="/api/interviews", tags=["interviews"])
+app.include_router(session.router, prefix="/api/session", tags=["session"])
 app.include_router(ws_audio.router, tags=["websocket"])
 app.include_router(ws_viewer.router, tags=["websocket"])
 
